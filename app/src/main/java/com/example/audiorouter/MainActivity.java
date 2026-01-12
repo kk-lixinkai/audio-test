@@ -6,58 +6,126 @@ import android.content.Context;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
     private TextView tvInfo;
-    private Button btnRefresh;
+    private Spinner spinnerDevices;
+    private Button btnPlay, btnStop;
+
     private AudioManager audioManager;
     private AudioDeviceCallback audioDeviceCallback;
+    private MediaPlayer mediaPlayer;
+
+    /**
+     * 用于保存当前所有可用的“输出”设备对象，以便播放时使用
+     */
+    private List<AudioDeviceInfo> mOutputDevices = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        tvInfo = findViewById(R.id.tvInfo);
-        btnRefresh = findViewById(R.id.btnRefresh);
+        initViews();
 
-        // 1. 获取 AudioManager 服务
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 
-        // 2. 初始化手动刷新按钮
-        btnRefresh.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                updateAudioInfo();
-            }
-        });
+        btnPlay.setOnClickListener(v -> playMusicOnSelectedDevice());
+        btnStop.setOnClickListener(v -> stopMusic());
 
-        // 3. 注册音频设备插拔回调 (实现自动监听)
+        // 注册插拔监听
         registerAudioCallback();
+    }
+
+    private void initViews() {
+        tvInfo = findViewById(R.id.tvInfo);
+        spinnerDevices = findViewById(R.id.spinnerDevices);
+        btnPlay = findViewById(R.id.btnPlay);
+        btnStop = findViewById(R.id.btnStop);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        updateAudioInfo();
+        updateAudioInfo(); // 刷新列表和日志
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        stopMusic();    // 释放MediaPlayer资源
         if (audioManager != null && audioDeviceCallback != null) {
             audioManager.unregisterAudioDeviceCallback(audioDeviceCallback);
+        }
+    }
+
+    /**
+     * 核心逻辑：播放音乐并指定路由
+     */
+    private void playMusicOnSelectedDevice() {
+        stopMusic();    // 如果正在播放，先停止
+
+        // 1. 获取 Spinner 选中的索引
+        int selectedIndex = spinnerDevices.getSelectedItemPosition();
+        if (selectedIndex < 0 || selectedIndex >= mOutputDevices.size()) {
+            showToast("请选择有效的输出设备");
+            return;
+        }
+
+        // 2. 获取对应的 AudioDeviceInfo 对象
+        AudioDeviceInfo targetDevice = mOutputDevices.get(selectedIndex);
+
+        try {
+            // 3. 初始化 MediaPlayer (使用系统默认铃声作为测试音频)
+            Uri defaultRingtoneUri = Settings.System.DEFAULT_RINGTONE_URI;
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(this, defaultRingtoneUri);
+
+            // 4. 【关键步骤】设置音频路由到指定设备
+            // Android M (API 23) 引入的方法
+            boolean success = mediaPlayer.setPreferredDevice(targetDevice);
+
+            if (!success) {
+                showToast("系统拒绝了路由请求，可能将使用默认设备");
+            }
+
+            mediaPlayer.prepare();
+            mediaPlayer.start();
+
+            showToast("正在通过: " + targetDevice.getProductName() + " 播放");
+            mediaPlayer.setOnCompletionListener(mp -> stopMusic());
+        } catch (IOException e) {
+            e.printStackTrace();
+            showToast("播放失败: " + e.getMessage());
+        }
+    }
+
+    private void stopMusic() {
+        if (mediaPlayer != null) {
+            if (mediaPlayer.isPlaying()) {
+                mediaPlayer.stop();
+            }
+            mediaPlayer.release();
+            mediaPlayer = null;
         }
     }
 
@@ -69,15 +137,12 @@ public class MainActivity extends AppCompatActivity {
             audioDeviceCallback = new AudioDeviceCallback() {
                 @Override
                 public void onAudioDevicesAdded(AudioDeviceInfo[] addedDevices) {
-                    super.onAudioDevicesAdded(addedDevices);
-                    showToast("设备已连接");
                     updateAudioInfo();
                 }
 
                 @Override
                 public void onAudioDevicesRemoved(AudioDeviceInfo[] removedDevices) {
-                    super.onAudioDevicesRemoved(removedDevices);
-                    showToast("设备已移除");
+                    stopMusic();
                     updateAudioInfo();
                 }
             };
@@ -93,81 +158,46 @@ public class MainActivity extends AppCompatActivity {
             tvInfo.setText("此功能需要 Android 6.0 (API 23) 及以上版本");
             return;
         }
-
-        StringBuilder sb = new StringBuilder();
-
-        // 获取当前的音频模式(如：正常、通话中、铃声中)
-        sb.append("=== 当前音频模式 ===\n");
-        sb.append("Mode: ").append(getModeName(audioManager.getMode())).append("\n\n");
-
-        // 获取所有设备 (包括输入和输出)
-        // GET_DEVICES_ALL: 返回所有连接的设备
-        // 也可以使用 GET_DEVICES_OUTPUTS 或 GET_DEVICES_INPUTS 分别获取
+        // 获取所有设备
         AudioDeviceInfo[] devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS | AudioManager.GET_DEVICES_OUTPUTS);
 
-        sb.append("=== 检测到的设备 (共 ").append(devices.length).append(" 个) ===\n");
+        //------------------------------------
+        // 1. 更新下拉选择框 (只筛选 Output 设备)
+        //------------------------------------
+        mOutputDevices.clear();
+        List<String> deviceNames = new ArrayList<>();
 
         for (AudioDeviceInfo device : devices) {
-            sb.append("-----------------------------------\n");
-
-            // 1. 设备名称(用户可见的名字，如 "Bluetooth Headphone")
-            sb.append("Name: ").append(device.getProductName()).append("\n");
-
-            // 2. 设备类型 (如 Speaker、Wired Headset、Bluetooth A2DP)
-            sb.append("Type: ").append(getDeviceTypeName(device.getType())).append("\n");
-
-            // 3. 角色 (输出 Sink 还是 输入 Source)
-            String role = device.isSink() ? "Output (Sink)" : (device.isSource() ? "Input (Source)" : "Unknown");
-            sb.append("Role: ").append(role).append("\n");
-
-            // 4. 设备 ID(系统分配的唯一ID)
-            sb.append("ID: ").append(device.getId()).append("\n");
-
-            // 5. 采样率支持
-            int[] sampleRates = device.getSampleRates();
-            sb.append("Sample Rates: ").append(intArrayToString(sampleRates)).append("\n");
-
-            // 6. 声道掩码(Channel Masks)
-            int[] channelMasks = device.getChannelMasks();
-            sb.append("Channel Masks: ").append(intArrayToString(channelMasks)).append("\n");
-
-            // 7. 编码格式 (Encodings)
-            int[] encoding = device.getEncodings();
-            sb.append("Encodings: ").append(intArrayToString(encoding)).append("\n");
-
-            // 8. 地址 (通常用于区分多个同类型设备，蓝牙设备显示MAC地址需权限，此处可能为空字符串)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                sb.append("Address: ").append(device.getAddress()).append("\n");
+            // isSink() 返回 true 代表这是个输出设备 (扬声器、耳机)
+            if (device.isSink()) {
+                mOutputDevices.add(device);
+                String name = device.getProductName() + " (" + getDeviceTypeName(device.getType()) + ")";
+                deviceNames.add(name);
             }
         }
 
-        tvInfo.setText(sb.toString());
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, deviceNames);
+        spinnerDevices.setAdapter(adapter);
 
+        //--------------------------------------------------
+        // 2. 更新底部的详细日志文本 (原有逻辑)
+        //--------------------------------------------------
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 当前检测到的设备 ===\n");
+        for (AudioDeviceInfo device : devices) {
+            sb.append("\nName: ").append(device.getProductName());
+            sb.append("\nType: ").append(getDeviceTypeName(device.getType()));
+            sb.append("\nRole: ").append(device.isSink() ? "Output" : "Input");
+            sb.append("\nID:   ").append(device.getId());
+            sb.append("\n--------------------");
+        }
+        tvInfo.setText(sb.toString());
     }
 
     // ------- 辅助工具方法 ----------
-    private String intArrayToString(int[] arr) {
-        if (arr == null || arr.length == 0) return "All/System Default";
-        return Arrays.toString(arr);
-    }
 
     private void showToast(String msg) {
         Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
-    }
-
-    private String getModeName(int mode) {
-        switch (mode) {
-            case AudioManager.MODE_NORMAL:
-                return "NORMAL";
-            case AudioManager.MODE_RINGTONE:
-                return "RINGTONE";
-            case AudioManager.MODE_IN_CALL:
-                return "IN_CALL";
-            case AudioManager.MODE_IN_COMMUNICATION:
-                return "IN_COMMUNICATION";
-            default:
-                return "UNKNOWN (" + mode + ")";
-        }
     }
 
     /**
