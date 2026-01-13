@@ -1,12 +1,18 @@
 package com.example.audiorouter;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
+import android.Manifest;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.media.AudioDeviceCallback;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
+import android.media.audiofx.Visualizer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -20,6 +26,8 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.example.audiodeviceinfo.AudioVisualizerView;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,13 +35,19 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final int PERMISSION_REQ_CODE = 1001;
+
     private TextView tvInfo;
     private Spinner spinnerDevices;
     private Button btnPlay, btnStop;
 
+    private AudioVisualizerView visualizerView; // 新增自定义View
+
     private AudioManager audioManager;
     private AudioDeviceCallback audioDeviceCallback;
     private MediaPlayer mediaPlayer;
+
+    private Visualizer mVisualizer;     // 新增 Visualizer 对象
 
     /**
      * 用于保存当前所有可用的“输出”设备对象，以便播放时使用
@@ -49,7 +63,12 @@ public class MainActivity extends AppCompatActivity {
 
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 
-        btnPlay.setOnClickListener(v -> playMusicOnSelectedDevice());
+        btnPlay.setOnClickListener(v -> {
+            // 播放前先检查权限，因为 Visualizer 需要 RECORD_AUDIO 权限
+            if (checkPermission()) {
+                playMusicOnSelectedDevice();
+            }
+        });
         btnStop.setOnClickListener(v -> stopMusic());
 
         // 注册插拔监听
@@ -61,7 +80,32 @@ public class MainActivity extends AppCompatActivity {
         spinnerDevices = findViewById(R.id.spinnerDevices);
         btnPlay = findViewById(R.id.btnPlay);
         btnStop = findViewById(R.id.btnStop);
+        visualizerView = findViewById(R.id.visualizerView);     // 绑定 View
     }
+
+    // -------- 权限相关 -------
+    private boolean checkPermission() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, PERMISSION_REQ_CODE);
+            return false;
+        }
+
+        return true;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQ_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                playMusicOnSelectedDevice();
+            } else {
+                showToast("拒绝录音权限无法使用可视化功能");
+            }
+        }
+    }
+
+    // ---------------------
 
     @Override
     protected void onResume() {
@@ -109,9 +153,14 @@ public class MainActivity extends AppCompatActivity {
             }
 
             mediaPlayer.prepare();
+
+            // --- 启动 Visualizer ---
+            initVisualizer(mediaPlayer.getAudioSessionId());
+            // ----------------------
+
             mediaPlayer.start();
 
-            showToast("正在通过: " + targetDevice.getProductName() + " 播放");
+            showToast("播放中: " + targetDevice.getProductName());
             mediaPlayer.setOnCompletionListener(mp -> stopMusic());
         } catch (IOException e) {
             e.printStackTrace();
@@ -119,7 +168,57 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void initVisualizer(int audioSessionId) {
+        if (mVisualizer != null) {
+            mVisualizer.release();
+        }
+
+        try {
+            // 创建 Visualizer
+            mVisualizer = new Visualizer(audioSessionId);
+
+            // 设置采样大小 (CaptureSize), 使用该设备支持的最大范围
+            int captureSize = Visualizer.getCaptureSizeRange()[1];
+
+            // 设置数据监听器
+            mVisualizer.setDataCaptureListener(new Visualizer.OnDataCaptureListener() {
+
+                @Override
+                public void onWaveFormDataCapture(Visualizer visualizer, byte[] waveform, int samplingRate) {
+                    // 将波形数据传递给自定义 View
+                    if (visualizerView != null) {
+                        visualizerView.updateVisualizer(waveform);
+                    }
+                }
+
+                @Override
+                public void onFftDataCapture(Visualizer visualizer, byte[] fft, int samplingRate) {
+                    // 不需要频域数据 (频谱)，留空
+                }
+            }, Visualizer.getMaxCaptureRate() / 2, true, false); // true 表示开启波形采集，false关闭频谱采集
+
+            // 启用 Visualizer
+            mVisualizer.setEnabled(true);
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            showToast("Visualizer 初始化失败: " + e.getMessage());
+        }
+
+    }
+
     private void stopMusic() {
+        // 释放 Visualizer
+        if (mVisualizer != null) {
+            mVisualizer.setEnabled(false);
+            mVisualizer.release();
+            mVisualizer = null;
+        }
+
+        // 清空 View的绘制
+        if (visualizerView != null) {
+            visualizerView.updateVisualizer(null);
+        }
+
         if (mediaPlayer != null) {
             if (mediaPlayer.isPlaying()) {
                 mediaPlayer.stop();
@@ -185,8 +284,8 @@ public class MainActivity extends AppCompatActivity {
         StringBuilder sb = new StringBuilder();
         sb.append("=== 当前检测到的设备 ===\n");
         for (AudioDeviceInfo device : devices) {
-            sb.append("\nName: ").append(device.getProductName());
-            sb.append("\nType: ").append(getDeviceTypeName(device.getType()));
+            sb.append("\nName: ").append(device.getProductName()).append("\n");
+            sb.append("\nType: ").append(getDeviceTypeName(device.getType())).append("\n");
             sb.append("\nRole: ").append(device.isSink() ? "Output" : "Input");
             sb.append("\nID:   ").append(device.getId());
             sb.append("\n--------------------");

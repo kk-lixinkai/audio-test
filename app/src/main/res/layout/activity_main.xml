@@ -16,14 +16,13 @@
         android:id="@+id/spinnerDevices"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="10dp"
-        android:background="#E0E0E0"
+        android:layout_marginBottom="5dp"
         android:minHeight="48dp" />
 
+    <!-- 2.播放控制区域 (保持不变) -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginBottom="10dp"
         android:orientation="horizontal">
 
         <Button
@@ -31,7 +30,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="播放测试音频" />
+            android:text="播放" />
 
         <Button
             android:id="@+id/btnStop"
@@ -41,21 +40,35 @@
             android:text="停止" />
     </LinearLayout>
 
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:layout_marginBottom="10dp"
-        android:background="#AAAAAA" />
-
-
-    <!-- 原来的区域 -->
-
+    <!-- 新增：可视化波形区域 -->
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
-        android:text="当前音频设备及路由信息: "
-        android:textSize="18sp"
+        android:text="音频波形:"
+        android:textSize="12sp" />
+
+    <!-- 这里使用完整的包名路径 -->
+    <com.example.audiodeviceinfo.AudioVisualizerView
+        android:id="@+id/visualizerView"
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:layout_marginBottom="10dp"
+        android:background="#20000000" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginBottom="5dp"
+        android:background="#AAAAAA" />
+
+
+    <!-- 3. 信息显示区域 -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:text="2. 设备及路由详情: "
         android:textStyle="bold" />
 
     <ScrollView
@@ -70,7 +83,7 @@
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
             android:padding="8dp"
-            android:text="正在获取..."
+            android:text="等待刷新..."
             android:textSize="12sp" />
     </ScrollView>
 
